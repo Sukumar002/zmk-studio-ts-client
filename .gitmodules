@@ -1,4 +1,4 @@
 [submodule "zmk-studio-messages"]
 	path = zmk-studio-messages
-	url = https://github.com/danielsvane/zmk-studio-messages.git
-	branch = customkeyboards
+	url = https://github.com/Sukumar002/zmk-studio-messages.git
+	branch = hana-combo-names
