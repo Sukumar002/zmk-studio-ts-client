@@ -235,6 +235,8 @@ export interface Combo {
   timeoutMs: number;
   requirePriorIdleMs: number;
   slowRelease: boolean;
+  /** Optional user-facing label stored with the combo. */
+  name: string;
 }
 
 /**
@@ -699,7 +701,15 @@ export const Notification = {
 };
 
 function createBaseCombo(): Combo {
-  return { keyPositions: [], layers: 0, binding: undefined, timeoutMs: 0, requirePriorIdleMs: 0, slowRelease: false };
+  return {
+    keyPositions: [],
+    layers: 0,
+    binding: undefined,
+    timeoutMs: 0,
+    requirePriorIdleMs: 0,
+    slowRelease: false,
+    name: "",
+  };
 }
 
 export const Combo = {
@@ -723,6 +733,9 @@ export const Combo = {
     }
     if (message.slowRelease !== false) {
       writer.uint32(48).bool(message.slowRelease);
+    }
+    if (message.name !== "") {
+      writer.uint32(58).string(message.name);
     }
     return writer;
   },
@@ -786,6 +799,13 @@ export const Combo = {
 
           message.slowRelease = reader.bool();
           continue;
+        case 7:
+          if (tag !== 58) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -805,6 +825,7 @@ export const Combo = {
       timeoutMs: isSet(object.timeoutMs) ? globalThis.Number(object.timeoutMs) : 0,
       requirePriorIdleMs: isSet(object.requirePriorIdleMs) ? globalThis.Number(object.requirePriorIdleMs) : 0,
       slowRelease: isSet(object.slowRelease) ? globalThis.Boolean(object.slowRelease) : false,
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
     };
   },
 
@@ -828,6 +849,9 @@ export const Combo = {
     if (message.slowRelease !== false) {
       obj.slowRelease = message.slowRelease;
     }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
     return obj;
   },
 
@@ -844,6 +868,7 @@ export const Combo = {
     message.timeoutMs = object.timeoutMs ?? 0;
     message.requirePriorIdleMs = object.requirePriorIdleMs ?? 0;
     message.slowRelease = object.slowRelease ?? false;
+    message.name = object.name ?? "";
     return message;
   },
 };
