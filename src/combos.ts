@@ -237,6 +237,8 @@ export interface Combo {
   slowRelease: boolean;
   /** Optional user-facing label stored with the combo. */
   name: string;
+  /** User-controlled presentation order. 0 means use pool index. */
+  displayOrder: number;
 }
 
 /**
@@ -709,6 +711,7 @@ function createBaseCombo(): Combo {
     requirePriorIdleMs: 0,
     slowRelease: false,
     name: "",
+    displayOrder: 0,
   };
 }
 
@@ -736,6 +739,9 @@ export const Combo = {
     }
     if (message.name !== "") {
       writer.uint32(58).string(message.name);
+    }
+    if (message.displayOrder !== 0) {
+      writer.uint32(64).uint32(message.displayOrder);
     }
     return writer;
   },
@@ -806,6 +812,13 @@ export const Combo = {
 
           message.name = reader.string();
           continue;
+        case 8:
+          if (tag !== 64) {
+            break;
+          }
+
+          message.displayOrder = reader.uint32();
+          continue;
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -826,6 +839,7 @@ export const Combo = {
       requirePriorIdleMs: isSet(object.requirePriorIdleMs) ? globalThis.Number(object.requirePriorIdleMs) : 0,
       slowRelease: isSet(object.slowRelease) ? globalThis.Boolean(object.slowRelease) : false,
       name: isSet(object.name) ? globalThis.String(object.name) : "",
+      displayOrder: isSet(object.displayOrder) ? globalThis.Number(object.displayOrder) : 0,
     };
   },
 
@@ -852,6 +866,9 @@ export const Combo = {
     if (message.name !== "") {
       obj.name = message.name;
     }
+    if (message.displayOrder !== 0) {
+      obj.displayOrder = Math.round(message.displayOrder);
+    }
     return obj;
   },
 
@@ -869,6 +886,7 @@ export const Combo = {
     message.requirePriorIdleMs = object.requirePriorIdleMs ?? 0;
     message.slowRelease = object.slowRelease ?? false;
     message.name = object.name ?? "";
+    message.displayOrder = object.displayOrder ?? 0;
     return message;
   },
 };
