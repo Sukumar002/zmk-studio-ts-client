@@ -1,4 +1,3 @@
 [submodule "zmk-studio-messages"]
 	path = zmk-studio-messages
 	url = https://github.com/Sukumar002/zmk-studio-messages.git
-	branch = main
