@@ -13,6 +13,11 @@ export interface RpcConnection {
   request_writable: WritableStream<Request>;
   notification_readable: ReadableStream<Notification>;
   current_request: number;
+  /**
+   * Abort the underlying transport. A timed-out or desynchronized RPC cannot
+   * safely be followed by another request on the same byte stream.
+   */
+  abort?: (reason?: any) => void;
 }
 
 export interface CreateRpcConnectionOpts {
@@ -78,10 +83,39 @@ export function create_rpc_connection(transport: RpcTransport, opts?: CreateRpcC
     request_writable,
     notification_readable,
     current_request: 0,
+    abort: (reason?: any) => transport.abortController.abort(reason),
   };
 }
 
-const rpcMutex = new Mutex();
+const rpcMutexes = new WeakMap<RpcConnection, Mutex>();
+
+function getRpcMutex(conn: RpcConnection): Mutex {
+  let mutex = rpcMutexes.get(conn);
+  if (!mutex) {
+    mutex = new Mutex();
+    rpcMutexes.set(conn, mutex);
+  }
+  return mutex;
+}
+
+export const DEFAULT_RPC_TIMEOUT_MS = 15000;
+
+export class RpcTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`RPC response timed out after ${timeoutMs} ms`);
+    this.timeoutMs = timeoutMs;
+    Object.setPrototypeOf(this, RpcTimeoutError.prototype);
+  }
+}
+
+export class RpcProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    Object.setPrototypeOf(this, RpcProtocolError.prototype);
+  }
+}
 
 export class NoResponseError extends Error {
   constructor() {
@@ -102,34 +136,83 @@ export class MetaError extends Error {
 
 export async function call_rpc(
   conn: RpcConnection,
-  req: Omit<Request, 'requestId'>
+  req: Omit<Request, 'requestId'>,
+  timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS
 ): Promise<RequestResponse> {
-  return await rpcMutex.runExclusive(async () => {
+  return await getRpcMutex(conn).runExclusive(async () => {
     let request: Request = { ...req, requestId: conn.current_request++ };
+    let writer: WritableStreamDefaultWriter<Request> | undefined;
+    let reader: ReadableStreamDefaultReader<RequestResponse> | undefined;
 
-    let writer = conn.request_writable.getWriter();
-    await writer.write(request);
-    writer.releaseLock();
+    const operation = (async () => {
+      writer = conn.request_writable.getWriter();
+      try {
+        await writer.write(request);
+      } finally {
+        writer.releaseLock();
+        writer = undefined;
+      }
 
-    let reader = conn.request_response_readable.getReader();
+      reader = conn.request_response_readable.getReader();
+      try {
+        let { done, value } = await reader.read();
 
-    let { done, value } = await reader.read();
-    reader.releaseLock();
+        if (done || !value) {
+          throw new RpcProtocolError("RPC response stream closed without a response");
+        }
 
-    if (done || !value) {
-      throw 'No response';
+        if (value.requestId != request.requestId) {
+          throw new RpcProtocolError(
+            `RPC response ID mismatch: expected ${request.requestId}, received ${value.requestId}`
+          );
+        }
+
+        if (value.meta?.noResponse) {
+          throw new NoResponseError();
+        } else if (value.meta?.simpleError) {
+          throw new MetaError(value.meta.simpleError);
+        }
+
+        return value;
+      } finally {
+        reader.releaseLock();
+        reader = undefined;
+      }
+    })();
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        const error = new RpcTimeoutError(timeoutMs);
+        conn.abort?.(error);
+        reject(error);
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([operation, timeoutPromise]);
+    } catch (error) {
+      if (error instanceof RpcTimeoutError) {
+        // Abort the transport first, then cancel any outstanding stream
+        // operation so its reader/writer lock is released before the mutex.
+        conn.abort?.(error);
+        if (reader) {
+          await reader.cancel(error).catch(() => undefined);
+        }
+        if (writer) {
+          await writer.abort(error).catch(() => undefined);
+        }
+        await operation.catch(() => undefined);
+      } else if (!(error instanceof NoResponseError) && !(error instanceof MetaError)) {
+        // A failed read, malformed protobuf frame, or mismatched request ID
+        // leaves the response stream unsafe to reuse. Force a clean reconnect.
+        conn.abort?.(error);
+      }
+      throw error;
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
-
-    if (value.requestId != request.requestId) {
-      throw 'Mismatch request IDs';
-    }
-
-    if (value.meta?.noResponse) {
-      throw new NoResponseError();
-    } else if (value.meta?.simpleError) {
-      throw new MetaError(value.meta.simpleError);
-    }
-
-    return value;
   });
 }
