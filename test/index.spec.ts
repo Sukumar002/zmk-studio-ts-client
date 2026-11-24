@@ -12,6 +12,7 @@ jest.mock(
 import {
   call_rpc,
   RpcConnection,
+  RpcDecodeError,
   RpcTimeoutError,
 } from '../src/index';
 
@@ -85,6 +86,28 @@ describe('call_rpc failure handling', () => {
     expect(readable.locked).toBe(false);
     expect(writable.locked).toBe(false);
     expect(conn.abort).toHaveBeenCalledWith(failure);
+  });
+
+  it('isolates a malformed frame and allows the next RPC to proceed', async () => {
+    const decodeFailure = new Error('truncated protobuf response');
+    const readable = new ReadableStream<any>({
+      start(controller) {
+        controller.enqueue({ __rpcDecodeError: decodeFailure });
+        controller.enqueue({ requestId: 1 });
+        controller.close();
+      },
+    });
+    const writable = new WritableStream<any>();
+    const conn = makeConnection(readable, writable);
+
+    await expect(call_rpc(conn, {} as any)).rejects.toBeInstanceOf(
+      RpcDecodeError
+    );
+    expect(conn.abort).not.toHaveBeenCalled();
+    expect(readable.locked).toBe(false);
+    expect(writable.locked).toBe(false);
+
+    await expect(call_rpc(conn, {} as any)).resolves.toEqual({ requestId: 1 });
   });
 
   it('times out a missing response, aborts the connection, and releases locks', async () => {
