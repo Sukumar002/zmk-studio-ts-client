@@ -47,8 +47,10 @@ export function create_rpc_connection(transport: RpcTransport, opts?: CreateRpcC
     .pipeThrough(new TransformStream(get_encoder()), { signal: opts?.signal })
     .pipeTo(transport.writable, { signal: opts?.signal });
 
-  reqPipelineClosed.catch((r) => {console.log("Closed error", r); return r}).then(async (reason: any) => {
-    await byte_readable.cancel();
+  reqPipelineClosed.catch((reason) => {
+    console.log("Closed error", reason);
+    // pipeTo owns the source stream lock and performs its own cancellation.
+    // Canceling byte_readable directly here throws because it is pipe-locked.
     transport.abortController.abort(reason);
   });
 
