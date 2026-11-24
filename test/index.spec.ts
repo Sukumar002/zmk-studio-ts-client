@@ -1,5 +1,3 @@
-import { ReadableStream, WritableStream } from 'web-streams-polyfill';
-
 jest.mock(
   '../src/studio',
   () => ({
