@@ -7,6 +7,16 @@ import { Mutex } from 'async-mutex';
 import { ErrorConditions } from './meta';
 export { Request, RequestResponse, Response, Notification };
 
+export class RpcDecodeError extends Error {
+  readonly cause: any;
+
+  constructor(cause: any) {
+    super("Failed to decode an RPC response frame");
+    this.cause = cause;
+    Object.setPrototypeOf(this, RpcDecodeError.prototype);
+  }
+}
+
 export interface RpcConnection {
   label: string;
   request_response_readable: ReadableStream<RequestResponse>;
@@ -47,7 +57,14 @@ export function create_rpc_connection(transport: RpcTransport, opts?: CreateRpcC
     .pipeThrough(
       new TransformStream({
         transform(chunk, controller) {
-          controller.enqueue(Response.decode(chunk));
+          try {
+            controller.enqueue(Response.decode(chunk));
+          } catch (error) {
+            // The framing decoder has already reached EOF, so the next frame
+            // can still be parsed. Surface this frame failure to the pending
+            // request instead of poisoning the entire response stream.
+            controller.enqueue({ __rpcDecodeError: error } as any);
+          }
         },
       }),
       { signal: opts?.signal }
@@ -58,7 +75,9 @@ export function create_rpc_connection(transport: RpcTransport, opts?: CreateRpcC
   let request_response_readable = a.pipeThrough(
     new TransformStream({
       transform(chunk, controller) {
-        if (chunk.requestResponse) {
+        if ((chunk as any).__rpcDecodeError) {
+          controller.enqueue(chunk as any);
+        } else if (chunk.requestResponse) {
           controller.enqueue(chunk.requestResponse);
         }
       },
@@ -171,6 +190,11 @@ export async function call_rpc(
           throw new RpcProtocolError("RPC response stream closed without a response");
         }
 
+        const decodeFailure = (value as any).__rpcDecodeError;
+        if (decodeFailure) {
+          throw new RpcDecodeError(decodeFailure);
+        }
+
         if (value.requestId != request.requestId) {
           throw new RpcProtocolError(
             `RPC response ID mismatch: expected ${request.requestId}, received ${value.requestId}`
@@ -213,7 +237,11 @@ export async function call_rpc(
           await writer.abort(error).catch(() => undefined);
         }
         await operation.catch(() => undefined);
-      } else if (!(error instanceof NoResponseError) && !(error instanceof MetaError)) {
+      } else if (
+        !(error instanceof NoResponseError) &&
+        !(error instanceof MetaError) &&
+        !(error instanceof RpcDecodeError)
+      ) {
         // A failed read, malformed protobuf frame, or mismatched request ID
         // leaves the response stream unsafe to reuse. Force a clean reconnect.
         abortConnection(conn, error);
