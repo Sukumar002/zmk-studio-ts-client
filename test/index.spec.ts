@@ -11,10 +11,12 @@ jest.mock(
 
 import {
   call_rpc,
+  create_rpc_connection,
   RpcConnection,
   RpcDecodeError,
   RpcTimeoutError,
 } from '../src/index';
+import { Request, Response } from '../src/studio';
 
 function makeConnection(
   readable: ReadableStream<any>,
@@ -130,6 +132,41 @@ describe('call_rpc failure handling', () => {
     expect(abort).toHaveBeenCalled();
     expect(readable.locked).toBe(false);
     expect(writable.locked).toBe(false);
+  });
+
+  it('continues decoding after a malformed protobuf frame', async () => {
+    (Request.encode as jest.Mock).mockReturnValue({
+      finish: () => Uint8Array.from([1]),
+    });
+    (Response.decode as jest.Mock)
+      .mockImplementationOnce(() => {
+        throw new Error('truncated protobuf response');
+      })
+      .mockReturnValueOnce({ requestResponse: { requestId: 1 } });
+
+    const readable = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          Uint8Array.from([0xab, 1, 0xad, 0xab, 2, 0xad])
+        );
+        controller.close();
+      },
+    });
+    const writable = new WritableStream<Uint8Array>();
+    const transport = {
+      label: 'test',
+      abortController: new AbortController(),
+      readable,
+      writable,
+    };
+    const conn = create_rpc_connection(transport as any);
+
+    await expect(call_rpc(conn, {} as any)).rejects.toBeInstanceOf(
+      RpcDecodeError
+    );
+    await expect(call_rpc(conn, {} as any)).resolves.toEqual({ requestId: 1 });
+
+    expect(transport.abortController.signal.aborted).toBe(false);
   });
 
   it('does not serialize independent connections behind one global mutex', async () => {
