@@ -98,6 +98,14 @@ function getRpcMutex(conn: RpcConnection): Mutex {
   return mutex;
 }
 
+function abortConnection(conn: RpcConnection, reason: any): void {
+  try {
+    conn.abort?.(reason);
+  } catch {
+    // Preserve the RPC failure that caused the abort.
+  }
+}
+
 export const DEFAULT_RPC_TIMEOUT_MS = 15000;
 
 export class RpcTimeoutError extends Error {
@@ -145,17 +153,19 @@ export async function call_rpc(
     let reader: ReadableStreamDefaultReader<RequestResponse> | undefined;
 
     const operation = (async () => {
-      writer = conn.request_writable.getWriter();
+      const activeWriter = conn.request_writable.getWriter();
+      writer = activeWriter;
       try {
-        await writer.write(request);
+        await activeWriter.write(request);
       } finally {
-        writer.releaseLock();
+        activeWriter.releaseLock();
         writer = undefined;
       }
 
-      reader = conn.request_response_readable.getReader();
+      const activeReader = conn.request_response_readable.getReader();
+      reader = activeReader;
       try {
-        let { done, value } = await reader.read();
+        let { done, value } = await activeReader.read();
 
         if (done || !value) {
           throw new RpcProtocolError("RPC response stream closed without a response");
@@ -175,7 +185,7 @@ export async function call_rpc(
 
         return value;
       } finally {
-        reader.releaseLock();
+        activeReader.releaseLock();
         reader = undefined;
       }
     })();
@@ -184,7 +194,7 @@ export async function call_rpc(
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
         const error = new RpcTimeoutError(timeoutMs);
-        conn.abort?.(error);
+        abortConnection(conn, error);
         reject(error);
       }, timeoutMs);
     });
@@ -195,7 +205,7 @@ export async function call_rpc(
       if (error instanceof RpcTimeoutError) {
         // Abort the transport first, then cancel any outstanding stream
         // operation so its reader/writer lock is released before the mutex.
-        conn.abort?.(error);
+        abortConnection(conn, error);
         if (reader) {
           await reader.cancel(error).catch(() => undefined);
         }
@@ -206,7 +216,7 @@ export async function call_rpc(
       } else if (!(error instanceof NoResponseError) && !(error instanceof MetaError)) {
         // A failed read, malformed protobuf frame, or mismatched request ID
         // leaves the response stream unsafe to reuse. Force a clean reconnect.
-        conn.abort?.(error);
+        abortConnection(conn, error);
       }
       throw error;
     } finally {
